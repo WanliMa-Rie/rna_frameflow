@@ -50,7 +50,11 @@ class Experiment:
             
             # Model checkpoints
             callbacks.append(ModelCheckpoint(**self._exp_cfg.checkpointer))
-            callbacks.append(Timer(duration=self._exp_cfg.trainer.max_time))
+
+            max_time = self._exp_cfg.trainer.get("max_time", None)
+            if max_time:
+                callbacks.append(Timer(duration=max_time))
+
             callbacks.append(NanGradientCallback())
             
             # Save config
