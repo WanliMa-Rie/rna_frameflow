@@ -4,7 +4,12 @@ rebuttals/**
 rna_backbone_design/tools/rhofold_api/checkpoints/RhoFold_pretrained.pt
 configs/*.ckpt
 camera_ready_ckpts/*.ckpt
+ckpt_local/
+data_ensemble/**
+metadata/**
+metadata/
 
+rna_backbone_design/data/tests/**
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -38,6 +43,8 @@ ckpt/**
 outputs/**
 lightning_logs/**
 
+.vscode/**
+.DS_Store
 
 
 # PyInstaller
