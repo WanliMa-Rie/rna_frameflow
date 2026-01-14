@@ -1,1 +1,2 @@
 from rna_backbone_design.data.rna_cluster_dataset import RNAClusterDataset
+from rna_backbone_design.data.rna_cluster_datamodule import RNAClusterDataModule

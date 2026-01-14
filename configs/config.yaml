@@ -1,19 +1,11 @@
 data_cfg:
-  csv_path: metadata/rna_metadata.csv # CSV for path and metadata to training examples
-  filtering:
-    max_len: 150
-    min_len: 40
-  min_t: 0.01
-  samples_per_eval_length: 5
-  num_eval_lengths: 10
+  data_dir: data_ensemble/rna_ensemble_data # Path to ensemble data root
   batch_size: 28
   max_batch_size: 28
-  max_squared_res: 375_000
-  max_num_res_squared: 375_000
-  eval_batch_size: 5
   num_workers: 4
-  prefetch_factor: 100
-  linear_effect: False
+  # Removed CSV related filtering params as they are not used by RNAClusterDataModule yet
+  # max_len: 150 # Optional
+  # min_len: 40  # Optional
 
 interpolant:
   min_t: 1e-2

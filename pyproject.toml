@@ -24,7 +24,7 @@ classifiers=[
 ]
 
 dependencies = [
-    "torch==2.4.1+cu121",
+    "torch>=2.4.1",
     "torchvision>=0.19.1",
     "torchaudio>=2.4.1",
     "lightning>=2.5.1",
@@ -60,8 +60,8 @@ dependencies = [
     "hatchling>=1.27.0",
     "editables>=0.5",
     "setuptools>=78.1.0",
-    "flash_ipa>=0.1.0",
-    "flash-attn>=2.8.0.post2",
+    # "flash_ipa>=0.1.0",
+    # "flash-attn>=2.8.0.post2",
 ]
 
 [project.urls]
@@ -117,21 +117,26 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 
-[tool.uv]
-find-links = [
-    "https://data.pyg.org/whl/torch-2.4.0%2Bcu121.html"
-]
-no-build-package = ["torchvision", "torchaudio", "torch-geometric", "torch-scatter", "torch-cluster", "mamba-ssm"]
+#[tool.uv]
+#find-links = [
+#    "https://data.pyg.org/whl/torch-2.4.0%2Bcu121.html"
+#]
+#no-build-package = ["torchvision", "torchaudio", "torch-geometric", "torch-scatter", "torch-cluster", "mamba-ssm"]
 
 [tool.uv.extra-build-dependencies]
 # `flash-attn` imports `torch` during wheel build; ensure build isolation has it.
-flash-attn = ["torch"]
+#flash-attn = ["torch"]
+torch-cluster = ["torch"]
+torch-scatter = ["torch"]
+torch-geometric = ["torch"]
 
 [tool.uv.sources]
-torch = { index = "pytorch" }
+#torch = { index = "pytorch" }
 flash_ipa = { git = "https://git@github.com/flagshippioneering/flash_ipa" }
+#torchaudio = { index = "pytorch" }
+#torchvision = { index = "pytorch" }
 
-[[tool.uv.index]]
-name = "pytorch"
-url = "https://download.pytorch.org/whl/cu121"
-explicit = true
+#[[tool.uv.index]]
+#name = "pytorch"
+#url = "https://download.pytorch.org/whl/cu121"
+#explicit = true

@@ -9,6 +9,7 @@ import torch
 from Bio.PDB import MMCIFParser, PDBParser, Structure
 from rna_backbone_design.data import vocabulary
 
+
 def structure_to_XCS(
     structure: Structure,
     constants,
@@ -47,7 +48,9 @@ def structure_to_XCS(
 
     models = list(structure.get_models())
     if len(models) != 1 and not nmr_okay:
-        raise ValueError(f"Only single model PDBs are supported. Found {len(models)} models.")
+        raise ValueError(
+            f"Only single model PDBs are supported. Found {len(models)} models."
+        )
     model = models[0]
 
     X, C, S = [], [], []
@@ -78,7 +81,9 @@ def structure_to_XCS(
             mask = np.zeros((constants.compact_atom_type_num,))
             res_b_factors = np.zeros((constants.compact_atom_type_num,))
             for atom in res:
-                compact_atom_order = constants.restype_name_to_compact_atom_order[res.resname]
+                compact_atom_order = constants.restype_name_to_compact_atom_order[
+                    res.resname
+                ]
                 if atom.name not in compact_atom_order:
                     continue
                 atom_idx = compact_atom_order[atom.name]
@@ -102,6 +107,7 @@ def structure_to_XCS(
                     X.append(np.zeros((constants.compact_atom_type_num, 3)))
                     C.append(-chain_idx)
                     S.append(vocabulary.gap_token)
+                    deoxy.append(False)  # Default to False for gaps
                     last_res_idx += 1
                 last_res_idx = res_idx
 
@@ -110,12 +116,17 @@ def structure_to_XCS(
             b_factors.append(res_b_factors)
 
             # if constants has deoxy_restypes attribute, check if resname is in it
-            if hasattr(constants, "deoxy_restypes") and res.resname in constants.deoxy_restypes:
+            if (
+                hasattr(constants, "deoxy_restypes")
+                and res.resname in constants.deoxy_restypes
+            ):
                 deoxy.append(True)
             else:
                 deoxy.append(False)
 
-            has_all_atoms = int(sum(mask)) == constants.restype_name_atom_num[res.resname]
+            has_all_atoms = (
+                int(sum(mask)) == constants.restype_name_atom_num[res.resname]
+            )
             has_all_atoms = 1 if has_all_atoms else -1
 
             X.append(pos)
