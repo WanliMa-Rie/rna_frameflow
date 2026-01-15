@@ -8,10 +8,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from rna_backbone_design.data import parsing
 from rna_backbone_design.data import data_transforms
 from rna_backbone_design.data import utils as du
-from rna_backbone_design.data import nucleotide_constants as nc
 from rna_backbone_design.data.rigid_utils import Rigid
 
 
@@ -113,6 +111,29 @@ class RNAClusterDataset(Dataset):
                 f"Unable to find valid (features + embedding) sample for split={self.split} under {self.data_dir}"
             )
 
+        raw_feats = du.parse_complex_feats(raw_feats)
+
+        modeled_idx = raw_feats.get("modeled_idx", None)
+        if modeled_idx is None:
+            aatype_np = raw_feats["aatype"]
+            modeled_idx = np.where((aatype_np != 20) & (aatype_np != 26))[0]
+
+        min_idx = int(np.min(modeled_idx))
+        max_idx = int(np.max(modeled_idx))
+
+        full_len = int(raw_feats["aatype"].shape[0])
+        raw_feats = {
+            k: (
+                v[min_idx : (max_idx + 1)]
+                if (
+                    (isinstance(v, np.ndarray) and v.ndim >= 1 and int(v.shape[0]) == full_len)
+                    or (torch.is_tensor(v) and v.ndim >= 1 and int(v.shape[0]) == full_len)
+                )
+                else v
+            )
+            for k, v in raw_feats.items()
+        }
+
         # Re-compute Geometry (Frames & Torsions) on-the-fly to match training pipeline
         # -----------------------------------------------------------------------------
         # 1. Convert to tensor
@@ -151,8 +172,11 @@ class RNAClusterDataset(Dataset):
 
         # -----------------------------------------------------------------------------
 
-        atom23_mask = tensor_feats["all_atom_mask"]
-        res_mask_base = (atom23_mask.sum(dim=-1) > 0).to(torch.float32)
+        if "bb_mask" in raw_feats:
+            res_mask_base = torch.from_numpy(raw_feats["bb_mask"]).to(torch.float32)
+        else:
+            atom23_mask = tensor_feats["all_atom_mask"]
+            res_mask_base = (atom23_mask.sum(dim=-1) > 0).to(torch.float32)
 
         # Extract basic info for length alignment
         seq_len = aatype_global.shape[0]
@@ -215,7 +239,7 @@ class RNAClusterDataset(Dataset):
         trans_1 = frame_0.get_trans()
         rotmats_1 = frame_0.get_rots().get_rot_mats()
 
-        is_na_residue_mask = res_mask > 0.5
+        is_na_residue_mask = torch.ones_like(res_mask).bool()
 
         return {
             "aatype": aatype,  # [L]

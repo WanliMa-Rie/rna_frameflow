@@ -36,9 +36,7 @@ def length_batching_collate(batch):
 
     # Initialize basic lists for keys not in padding logic (like names)
     padded_batch["pdb_name"] = [b["pdb_name"] for b in batch]
-    padded_batch["is_na_residue_mask"] = torch.zeros(
-        len(batch), max_len, dtype=torch.bool
-    )
+    padded_batch["is_na_residue_mask"] = torch.ones(len(batch), max_len, dtype=torch.bool)
 
     # Pre-allocate tensors
     # To handle heterogeneous batches properly we need masking
@@ -89,12 +87,6 @@ def length_batching_collate(batch):
             l = lengths[i]
             out[i, :l, :l] = b[k]
         padded_batch[k] = out
-
-    # Fill is_na_residue_mask (assuming all are NA for this dataset)
-    # The dataset returns `res_mask` which is 1s for present residues.
-    # We can just copy that.
-    if "res_mask" in padded_batch:
-        padded_batch["is_na_residue_mask"] = padded_batch["res_mask"] > 0.5
 
     return padded_batch
 
