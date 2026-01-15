@@ -30,7 +30,7 @@ try:
         EdgeTransition as FlashEdgeTransition,
     )
     from flash_ipa.linear import Linear as FlashLinear
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     check_config_ipa = None
     FlashEdgeEmbedder = None
     FlashInvariantPointAttention = None
