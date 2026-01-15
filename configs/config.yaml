@@ -1,8 +1,8 @@
 data_cfg:
   data_dir: data_ensemble/rna_ensemble_data # Path to ensemble data root
-  batch_size: 12  # 28
-  max_batch_size: 12
-  num_workers: 4
+  batch_size: 4  # 28
+  max_batch_size: 4
+  num_workers: 2
   # Removed CSV related filtering params as they are not used by RNAClusterDataModule yet
   # max_len: 150 # Optional
   # min_len: 40  # Optional
@@ -23,7 +23,7 @@ interpolant:
 model:
   use_flashipa: False
   node_embed_size: 256
-  edge_embed_size: 128
+  edge_embed_size: 64
   symmetric: False
   node_features:
     c_s: ${model.node_embed_size}
