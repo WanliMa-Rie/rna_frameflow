@@ -1,3 +1,4 @@
+import hashlib
 from typing import Any, Dict, List, Optional
 import pathlib
 import json
@@ -32,8 +33,7 @@ class RNAClusterDataset(Dataset):
         Args:
             data_dir: Path to the root directory containing cluster folders.
                       (e.g., 'data_ensemble/rna_ensemble_data')
-            split: Data split to use (currently not strictly enforced by file presence,
-                   but can be used for filtering if metadata exists).
+            split: Data split to use (train, val, or test).
             max_length: Optional maximum sequence length to filter or crop.
             overfit: If True, restricts the dataset to a small subset for debugging.
         """
@@ -43,7 +43,7 @@ class RNAClusterDataset(Dataset):
         self.overfit = overfit
 
         # Gather all cluster directories
-        self.clusters = sorted(
+        all_clusters = sorted(
             [
                 d
                 for d in self.data_dir.iterdir()
@@ -51,33 +51,67 @@ class RNAClusterDataset(Dataset):
             ]
         )
 
+        # Stable hash-based split
+        self.clusters = []
+        for cluster_dir in all_clusters:
+            # Use MD5 hash of the cluster name for stable splitting
+            cluster_name = cluster_dir.name
+            hash_val = int(hashlib.md5(cluster_name.encode()).hexdigest(), 16)
+            percent = hash_val % 100
+
+            if split == "train":
+                if percent < 80:
+                    self.clusters.append(cluster_dir)
+            elif split == "val":
+                if 80 <= percent < 90:
+                    self.clusters.append(cluster_dir)
+            elif split == "test":
+                if percent >= 90:
+                    self.clusters.append(cluster_dir)
+            else:
+                raise ValueError(f"Invalid split: {split}")
+
         if self.overfit:
-            self.clusters = self.clusters[:2]  # Just take the first few for overfitting
+            self.clusters = self.clusters[:2]
 
         print(
-            f"RNAClusterDataset: Found {len(self.clusters)} clusters in {self.data_dir}"
+            f"RNAClusterDataset ({self.split}): Found {len(self.clusters)} clusters (out of {len(all_clusters)}) in {self.data_dir}"
         )
 
     def __len__(self) -> int:
         return len(self.clusters)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        cluster_dir = self.clusters[idx]
+        start_idx = idx % len(self.clusters)
+        cluster_dir = None
+        pkl_path = None
+        raw_feats = None
 
-        # 1. Select a feature file (PKL)
-        feature_dir = cluster_dir / "features"
-        # If features don't exist, we might need to fallback or skip.
-        # Assuming preprocess_ensemble.py has been run.
-        pkl_files = list(feature_dir.glob("*.pkl"))
+        for offset in range(len(self.clusters)):
+            candidate_cluster_dir = self.clusters[(start_idx + offset) % len(self.clusters)]
+            feature_dir = candidate_cluster_dir / "features"
+            pkl_files = list(feature_dir.glob("*.pkl"))
+            if not pkl_files:
+                continue
 
-        if not pkl_files:
-            # Fallback for now if features missing, or just skip
-            return self.__getitem__((idx + 1) % len(self))
+            candidate_pkl_path = random.choice(pkl_files)
+            candidate_raw_feats = du.read_pkl(str(candidate_pkl_path))
 
-        pkl_path = random.choice(pkl_files)
+            embedding_dir = candidate_cluster_dir / "embedding"
+            single_files = sorted(list(embedding_dir.glob("*_single.npy")))
+            pair_files = sorted(list(embedding_dir.glob("*_pair.npy")))
+            if not single_files or not pair_files:
+                continue
 
-        # 2. Load precomputed features
-        raw_feats = du.read_pkl(str(pkl_path))
+            cluster_dir = candidate_cluster_dir
+            pkl_path = candidate_pkl_path
+            raw_feats = candidate_raw_feats
+            break
+
+        if raw_feats is None or pkl_path is None or cluster_dir is None:
+            raise RuntimeError(
+                f"Unable to find valid (features + embedding) sample for split={self.split} under {self.data_dir}"
+            )
 
         # Re-compute Geometry (Frames & Torsions) on-the-fly to match training pipeline
         # -----------------------------------------------------------------------------
@@ -117,25 +151,20 @@ class RNAClusterDataset(Dataset):
 
         # -----------------------------------------------------------------------------
 
+        atom23_mask = tensor_feats["all_atom_mask"]
+        res_mask_base = (atom23_mask.sum(dim=-1) > 0).to(torch.float32)
+
         # Extract basic info for length alignment
         seq_len = aatype_global.shape[0]
 
-        # 3. Load Embeddings
         embedding_dir = cluster_dir / "embedding"
-        # Embeddings are shared per cluster, usually named after the cluster or a representative
-        # But based on original code, it looks for ANY *_single.npy file.
-        # Let's keep that logic.
         single_files = sorted(list(embedding_dir.glob("*_single.npy")))
         pair_files = sorted(list(embedding_dir.glob("*_pair.npy")))
-
-        if not single_files or not pair_files:
-            return self.__getitem__((idx + 1) % len(self))
-
-        single_embeds = torch.from_numpy(np.load(single_files[0])).float()
-        pair_embeds = torch.from_numpy(np.load(pair_files[0])).float()
+        single_embedding = torch.from_numpy(np.load(single_files[0])).float()
+        pair_embedding = torch.from_numpy(np.load(pair_files[0])).float()
 
         # 4. Align Lengths (Features vs Embeddings)
-        emb_len = single_embeds.shape[0]
+        emb_len = single_embedding.shape[0]
         min_len = min(seq_len, emb_len)
 
         # Helper to slice all relevant keys
@@ -145,6 +174,7 @@ class RNAClusterDataset(Dataset):
         # Load and Slice Features
         # We assume these exist because we put them there in preprocessing
         aatype = slice_tensor(aatype_global, min_len)
+        res_mask = slice_tensor(res_mask_base, min_len)
 
         # rigidgroups_gt_frames: [L, 11, 4, 4] -> we slice to 1 for backbone frame if needed,
         # but original code used 'frames_all = Rigid.from_tensor_4x4(rigidgroups_gt_frames)'
@@ -155,8 +185,8 @@ class RNAClusterDataset(Dataset):
         torsion_angles_sin_cos = slice_tensor(gt_torsions_sin_cos, min_len)
         torsion_angles_mask = slice_tensor(gt_torsions_mask, min_len)
 
-        single_embeds = single_embeds[:min_len]
-        pair_embeds = pair_embeds[:min_len, :min_len]
+        single_embedding = single_embedding[:min_len]
+        pair_embedding = pair_embedding[:min_len, :min_len]
 
         # 5. Cropping
         if self.max_length is not None and min_len > self.max_length:
@@ -167,11 +197,12 @@ class RNAClusterDataset(Dataset):
             end_idx = start_idx + self.max_length
 
             aatype = aatype[start_idx:end_idx]
+            res_mask = res_mask[start_idx:end_idx]
             rigidgroups_gt_frames = rigidgroups_gt_frames[start_idx:end_idx]
             torsion_angles_sin_cos = torsion_angles_sin_cos[start_idx:end_idx]
             torsion_angles_mask = torsion_angles_mask[start_idx:end_idx]
-            single_embeds = single_embeds[start_idx:end_idx]
-            pair_embeds = pair_embeds[start_idx:end_idx, start_idx:end_idx]
+            single_embedding = single_embedding[start_idx:end_idx]
+            pair_embedding = pair_embedding[start_idx:end_idx, start_idx:end_idx]
 
             min_len = self.max_length
 
@@ -184,17 +215,7 @@ class RNAClusterDataset(Dataset):
         trans_1 = frame_0.get_trans()
         rotmats_1 = frame_0.get_rots().get_rot_mats()
 
-        # 7. Final Batch Construction
-        # We need a residue mask. In the original code, it was derived from atom_mask.
-        # Since we are loading valid parsed residues, we can assume mask is all 1s for the sliced region,
-        # UNLESS we want to support gaps. The preprocessing used 'with_gaps=True'.
-        # However, for now, let's assume valid residues.
-        # Ideally, we should have saved 'res_mask' or 'atom_mask' in the PKL.
-        # Checking preprocess_ensemble.py: we saved "atom_mask".
-        # Let's load it to compute res_mask properly if needed.
-        # But for efficiency, if we trust the frames are valid where aatype is valid:
-        res_mask = torch.ones((min_len,), dtype=torch.float32)
-        is_na_residue_mask = res_mask.clone()
+        is_na_residue_mask = res_mask > 0.5
 
         return {
             "aatype": aatype,  # [L]
@@ -206,7 +227,7 @@ class RNAClusterDataset(Dataset):
             "torsion_angles_mask": torsion_angles_mask[:, :8].float(),  # [L, 8]
             "res_mask": res_mask,
             "is_na_residue_mask": is_na_residue_mask,
-            "single_embeds": single_embeds,
-            "pair_embeds": pair_embeds,
+            "single_embedding": single_embedding,
+            "pair_embedding": pair_embedding,
             "pdb_name": pkl_path.stem,
         }

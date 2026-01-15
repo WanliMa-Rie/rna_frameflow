@@ -1,6 +1,6 @@
 import torch
 from pytorch_lightning import LightningDataModule
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from rna_backbone_design.data.rna_cluster_dataset import RNAClusterDataset
 
 
@@ -23,22 +23,22 @@ def length_batching_collate(batch):
     max_len = max(lengths)
 
     # Keys to pad
-    keys_1d = ["res_mask", "sequence"]  # [L]
-    keys_2d = ["trans_1", "single_embeds", "torsion_angles_mask"]  # [L, D]
+    keys_1d = ["res_mask", "aatype"]  # [L]
+    keys_2d = ["trans_1", "single_embedding", "torsion_angles_mask"]  # [L, D]
     keys_3d = [
         "rotmats_1",
         "torsion_angles_sin_cos",
         "alt_torsion_angles_sin_cos",
     ]  # [L, 3, 3], [L, 7, 2]
-    keys_pair = ["pair_embeds"]  # [L, L, D]
+    keys_pair = ["pair_embedding"]  # [L, L, D]
 
     padded_batch = {}
 
     # Initialize basic lists for keys not in padding logic (like names)
     padded_batch["pdb_name"] = [b["pdb_name"] for b in batch]
     padded_batch["is_na_residue_mask"] = torch.zeros(
-        len(batch), max_len
-    )  # Required by model logic
+        len(batch), max_len, dtype=torch.bool
+    )
 
     # Pre-allocate tensors
     # To handle heterogeneous batches properly we need masking
@@ -94,7 +94,7 @@ def length_batching_collate(batch):
     # The dataset returns `res_mask` which is 1s for present residues.
     # We can just copy that.
     if "res_mask" in padded_batch:
-        padded_batch["is_na_residue_mask"] = padded_batch["res_mask"].clone()
+        padded_batch["is_na_residue_mask"] = padded_batch["res_mask"] > 0.5
 
     return padded_batch
 
@@ -112,28 +112,31 @@ class RNAClusterDataModule(LightningDataModule):
 
         self.train_dataset = None
         self.val_dataset = None
+        self.test_dataset = None
 
     def setup(self, stage=None):
-        # Instantiate the full dataset
-        full_dataset = RNAClusterDataset(
-            data_dir=self.data_dir,
-            split="train",  # We'll split manually
-            max_length=self.data_cfg.get("max_len", None),  # Optional filtering
-        )
-
-        # Simple random split for now (e.g., 90/10)
-        # In production, use strict validation sets from metadata
-        total_size = len(full_dataset)
-        val_size = int(total_size * 0.1)
-        train_size = total_size - val_size
-
-        self.train_dataset, self.val_dataset = random_split(
-            full_dataset,
-            [train_size, val_size],
-            generator=torch.Generator().manual_seed(42),
-        )
+        if stage in (None, "fit", "validate"):
+            self.train_dataset = RNAClusterDataset(
+                data_dir=self.data_dir,
+                split="train",
+                max_length=self.data_cfg.get("max_len", None),
+            )
+            self.val_dataset = RNAClusterDataset(
+                data_dir=self.data_dir,
+                split="val",
+                max_length=self.data_cfg.get("max_len", None),
+            )
+        if stage == "test" or stage is None:
+            self.test_dataset = RNAClusterDataset(
+                data_dir=self.data_dir,
+                split="test",
+                max_length=self.data_cfg.get("max_len", None),
+            )
 
     def train_dataloader(self):
+        if self.train_dataset is None:
+            self.setup("fit")
+        assert self.train_dataset is not None
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -144,9 +147,25 @@ class RNAClusterDataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
+        if self.val_dataset is None:
+            self.setup("fit")
+        assert self.val_dataset is not None
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,  # Validation can be same batch size
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=length_batching_collate,
+            pin_memory=True,
+        )
+
+    def test_dataloader(self):
+        if self.test_dataset is None:
+            self.setup("test")
+        assert self.test_dataset is not None
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
             collate_fn=length_batching_collate,

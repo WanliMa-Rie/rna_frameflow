@@ -40,7 +40,7 @@ class Experiment:
             log.info("Debug mode.")
             logger = None
             self._exp_cfg.num_devices = 1
-            self._data_cfg.loader.num_workers = 0
+            self._data_cfg.num_workers = 0
         else:
             logger = WandbLogger(
                 **self._exp_cfg.wandb,
@@ -78,7 +78,7 @@ class Experiment:
             **self._exp_cfg.trainer,
             callbacks=callbacks,
             logger=logger,
-            use_distributed_sampler=False,
+            use_distributed_sampler=len(devices) > 1,
             enable_progress_bar=True,
             enable_model_summary=True,
             devices=devices,
