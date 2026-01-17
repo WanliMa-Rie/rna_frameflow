@@ -14,6 +14,7 @@ import logging
 from pytorch_lightning import LightningModule
 
 from rna_backbone_design.analysis import metrics
+from rna_backbone_design.analysis.ensemble_metrics import compute_ensemble_metrics
 from rna_backbone_design.analysis import utils as au
 from rna_backbone_design.models.flow_model import FlowModel
 from rna_backbone_design.models import utils as mu
@@ -315,11 +316,14 @@ class FlowModule(LightningModule):
         aligned_pred_c4 = pred_c4
         if valid_align.any():
             idx = torch.nonzero(valid_align, as_tuple=False).squeeze(-1)
-            aligned_subset = metrics.superimpose(
-                gt_c4[idx], pred_c4[idx], mask=mask_bool[idx]
-            )
-            aligned_pred_c4 = pred_c4.clone()
-            aligned_pred_c4[idx] = aligned_subset
+            try:
+                aligned_subset = metrics.superimpose(
+                    gt_c4[idx], pred_c4[idx], mask=mask_bool[idx]
+                )
+                aligned_pred_c4 = pred_c4.clone()
+                aligned_pred_c4[idx] = aligned_subset
+            except RuntimeError:
+                aligned_pred_c4 = pred_c4
 
         rmsd_c4 = metrics.rmsd(gt_c4, aligned_pred_c4, mask=mask_bool.float())
         rmsd_c4 = torch.where(valid_align, rmsd_c4, torch.full_like(rmsd_c4, torch.nan))
@@ -329,11 +333,61 @@ class FlowModule(LightningModule):
         gt_atoms_np = gt_atoms.detach().cpu().numpy()
         mask_np = mask_bool.detach().cpu().numpy()
 
+        ensemble_cfg = getattr(self._exp_cfg, "ensemble_metrics", None)
+        compute_ensemble = False
+        max_batches = 0
+        num_generated = 0
+        num_gt = 0
+        if ensemble_cfg is not None:
+            compute_ensemble = bool(getattr(ensemble_cfg, "enabled", False))
+            max_batches = int(getattr(ensemble_cfg, "max_batches", 0))
+            num_generated = int(getattr(ensemble_cfg, "num_generated", 0))
+            num_gt = int(getattr(ensemble_cfg, "num_gt", 0))
+
         for i in range(num_batch):
             valid_len = int(mask_np[i].sum())
 
-            c4_metrics["rmsd_c4"] = float(rmsd_c4.detach().cpu().numpy()[i])
+            c4_metrics = {"rmsd_c4": float(rmsd_c4.detach().cpu().numpy()[i])}
+
+            gt_ens_list = batch.get("gt_c4_ensemble", None)
+            gt_ens = None
+            if isinstance(gt_ens_list, list):
+                gt_ens = gt_ens_list[i]
+
+            if (
+                compute_ensemble
+                and batch_idx < max_batches
+                and gt_ens is not None
+                and isinstance(gt_ens, torch.Tensor)
+            ):
+                eff_len = min(valid_len, int(gt_ens.shape[1]))
+                k_gt = min(num_gt, int(gt_ens.shape[0]), num_generated)
+                if eff_len >= 3 and k_gt >= 2 and num_generated >= 2:
+                    context = {
+                        "single_embedding": batch["single_embedding"][
+                            i : i + 1, :eff_len
+                        ].repeat(num_generated, 1, 1),
+                        "pair_embedding": batch["pair_embedding"][
+                            i : i + 1, :eff_len, :eff_len
+                        ].repeat(num_generated, 1, 1, 1),
+                    }
+                    atom37_traj, _, _ = self.interpolant.sample(
+                        num_generated, eff_len, self.model, context=context
+                    )
+                    pred_ens = atom37_traj[-1][:, :eff_len, c4_idx]
+                    gt_ens_i = gt_ens[:k_gt, :eff_len].to(pred_ens.device)
+                    pred_ens_i = pred_ens[:k_gt]
+                    m = mask_bool[i, :eff_len].to(pred_ens.device)
+                    ens = compute_ensemble_metrics(gt_ens_i, pred_ens_i, m)
+                    c4_metrics.update(
+                        {
+                            "ens_pairwise_rmsd": ens.pairwise_rmsd,
+                            "ens_w2": ens.w2_distance,
+                            "ens_pairwise_rmsd_r": ens.pairwise_rmsd_r,
+                        }
+                    )
             batch_metrics.append(c4_metrics)
+
 
             if batch_idx == 0 and i == 0:
                 # Perform actual generative sampling (from noise) for visualization
@@ -479,17 +533,51 @@ class FlowModule(LightningModule):
 
         res_mask = batch["res_mask"]
         num_batch = res_mask.shape[0]
+        mask_bool = res_mask > 0.5
+
+        gt_trans_1 = batch["trans_1"]
+        gt_rotmats_1 = batch["rotmats_1"]
+        gt_torsions_1 = batch["torsion_angles_sin_cos"][:, :, :8, :].reshape(
+            num_batch, -1, 16
+        )
+        is_na_residue_mask = batch["is_na_residue_mask"].bool()
+        gt_atoms = rna_all_atom.to_atom37_rna(
+            gt_trans_1, gt_rotmats_1, is_na_residue_mask, torsions=gt_torsions_1
+        )
+        c4_idx = nucleotide_constants.atom_order["C4'"]
+        gt_c4 = gt_atoms[:, :, c4_idx]
 
         pdb_names = batch.get("pdb_name", None)
         if pdb_names is None:
             pdb_names = [None] * num_batch
+        cluster_ids = batch.get("cluster_id", None)
+        if cluster_ids is None:
+            cluster_ids = [None] * num_batch
+
+        outputs = []
+
+        ensemble_cfg = getattr(self._infer_cfg, "ensemble", None)
+        ensemble_enabled = False
+        ensemble_num_generated = 0
+        ensemble_num_gt = 0
+        ensemble_write_pdbs = False
+        if ensemble_cfg is not None:
+            ensemble_enabled = bool(getattr(ensemble_cfg, "enabled", False))
+            ensemble_num_generated = int(getattr(ensemble_cfg, "num_generated", 0))
+            ensemble_num_gt = int(getattr(ensemble_cfg, "num_gt", 0))
+            ensemble_write_pdbs = bool(getattr(ensemble_cfg, "write_ensemble_pdbs", False))
 
         for i in range(num_batch):
             sample_length = int(res_mask[i].sum().item())
             if sample_length < 1:
                 continue
 
-            sample_dir = os.path.join(self._output_dir, f"length_{sample_length}")
+            cluster_id = (
+                cluster_ids[i]
+                if isinstance(cluster_ids, list) and cluster_ids[i] is not None
+                else "unknown_cluster"
+            )
+            sample_dir = os.path.join(self._output_dir, cluster_id, f"length_{sample_length}")
             os.makedirs(sample_dir, exist_ok=True)
 
             context = {
@@ -520,3 +608,90 @@ class FlowModule(LightningModule):
                 os.path.join(sample_dir, f"sample_{sample_name}"),
                 is_na_residue_mask=is_na_residue_mask,
             )
+
+            pred_c4 = atom37_traj[-1][0, :sample_length, c4_idx]
+            gt_c4_i = gt_c4[i : i + 1, :sample_length]
+            mask_i = mask_bool[i : i + 1, :sample_length]
+            valid_align = bool(mask_i.sum().item() >= 3)
+            rmsd_c4 = float("nan")
+            if valid_align:
+                try:
+                    aligned_pred_c4 = metrics.superimpose(
+                        gt_c4_i, pred_c4[None, ...], mask=mask_i
+                    )
+                    rmsd_c4 = float(
+                        metrics.rmsd(gt_c4_i, aligned_pred_c4, mask=mask_i.float())
+                        .detach()
+                        .cpu()
+                        .numpy()[0]
+                    )
+                except RuntimeError:
+                    rmsd_c4 = float("nan")
+
+            out_row = {
+                "cluster_id": cluster_id,
+                "pdb_name": pdb_name,
+                "sample_name": sample_name,
+                "length": sample_length,
+                "rmsd_c4": rmsd_c4,
+                "sample_dir": sample_dir,
+            }
+
+            gt_ens_list = batch.get("gt_c4_ensemble", None)
+            gt_ens = None
+            if isinstance(gt_ens_list, list):
+                gt_ens = gt_ens_list[i]
+
+            if (
+                ensemble_enabled
+                and gt_ens is not None
+                and isinstance(gt_ens, torch.Tensor)
+                and ensemble_num_generated >= 2
+                and ensemble_num_gt >= 2
+            ):
+                eff_len = min(sample_length, int(gt_ens.shape[1]))
+                k = min(ensemble_num_generated, ensemble_num_gt, int(gt_ens.shape[0]))
+                if eff_len >= 3 and k >= 2:
+                    context_ens = {
+                        "single_embedding": batch["single_embedding"][
+                            i : i + 1, :eff_len
+                        ].repeat(ensemble_num_generated, 1, 1),
+                        "pair_embedding": batch["pair_embedding"][
+                            i : i + 1, :eff_len, :eff_len
+                        ].repeat(ensemble_num_generated, 1, 1, 1),
+                    }
+                    atom37_traj_ens, _, _ = interpolant.sample(
+                        ensemble_num_generated, eff_len, self.model, context=context_ens
+                    )
+                    pred_ens = atom37_traj_ens[-1][:, :eff_len, c4_idx]
+                    gt_ens_i = gt_ens[:k, :eff_len].to(pred_ens.device)
+                    pred_ens_i = pred_ens[:k]
+                    m = mask_bool[i, :eff_len].to(pred_ens.device)
+                    ens = compute_ensemble_metrics(gt_ens_i, pred_ens_i, m)
+                    out_row.update(
+                        {
+                            "ens_pairwise_rmsd": ens.pairwise_rmsd,
+                            "ens_w2": ens.w2_distance,
+                            "ens_pairwise_rmsd_r": ens.pairwise_rmsd_r,
+                            "ens_k": k,
+                            "ens_num_generated": ensemble_num_generated,
+                            "ens_num_gt_available": int(gt_ens.shape[0]),
+                        }
+                    )
+
+                    if ensemble_write_pdbs:
+                        for j in range(ensemble_num_generated):
+                            sample_j = du.to_numpy(atom37_traj_ens[-1][j : j + 1])[0]
+                            au.write_complex_to_pdbs(
+                                sample_j,
+                                os.path.join(sample_dir, f"sample_{sample_name}_ens{j}"),
+                                is_na_residue_mask=np.ones(eff_len, dtype=np.int64),
+                            )
+
+            outputs.append(
+                {
+                    **out_row,
+                }
+            )
+
+        return outputs

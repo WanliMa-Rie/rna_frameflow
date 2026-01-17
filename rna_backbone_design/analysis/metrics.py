@@ -54,8 +54,8 @@ def dihedral_from_points(
 
 
 def dihedral_from_vectors(
-    v1: Float[Tensor, "B 3"], v2: Float[Tensor, "B 3"], v3: Float[Tensor, "B 3"]
-) -> Float[Tensor, "B"]:
+    v1: "Float[Tensor, 'B 3']", v2: "Float[Tensor, 'B 3']", v3: "Float[Tensor, 'B 3']"
+) -> "Float[Tensor, 'B']":
     normalize = lambda v: torch.nn.functional.normalize(v, dim=-1)
     vector_dot = lambda v1, v2: torch.sum(v1 * v2, dim=-1)
 

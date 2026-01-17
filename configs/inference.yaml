@@ -9,6 +9,11 @@ inference:
   ckpt_path: camera_ready_ckpts/ # path to model checkpoint of interest
   output_dir: generated_rna_bb_samples # directory to store generated RNA backbone samples
   name: generated_samples # sub-directory under the above directory to store the samples
+  ensemble:
+    enabled: false
+    num_generated: 16
+    num_gt: 16
+    write_ensemble_pdbs: true
 
   # Auto-evaluation
   evalsuite:

@@ -1,8 +1,10 @@
 data_cfg:
   data_dir: data_ensemble/rna_ensemble_data # Path to ensemble data root
-  batch_size: 4  # 28
-  max_batch_size: 4
-  num_workers: 2
+  batch_size: 6  # 28
+  max_batch_size: 12
+  num_workers: 4
+  return_ensemble: true
+  max_ensemble_conformers: null
   # Removed CSV related filtering params as they are not used by RNAClusterDataModule yet
   # max_len: 150 # Optional
   # min_len: 40  # Optional
@@ -23,7 +25,7 @@ interpolant:
 model:
   use_flashipa: False
   node_embed_size: 256
-  edge_embed_size: 64
+  edge_embed_size: 128
   symmetric: False
   node_features:
     c_s: ${model.node_embed_size}
@@ -79,6 +81,11 @@ experiment:
     aux_loss_t_pass: 0.25
     tors_loss_scale: 1.0
     num_non_frame_atoms: 0 # choose from [0, 3, 7]
+  ensemble_metrics:
+    enabled: true
+    num_generated: 16
+    num_gt: 16
+    max_batches: 1
   wandb:
     name: rna-frameflow_cond
     project: se3-fm

@@ -8,6 +8,7 @@ ckpt_local/
 data_ensemble/**
 metadata/**
 metadata/
+configs/*.yaml
 
 rna_backbone_design/data/tests/**
 # Byte-compiled / optimized / DLL files

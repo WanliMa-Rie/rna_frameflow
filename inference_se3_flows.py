@@ -5,6 +5,8 @@ Iterates through the test split of the RNAClusterDataset and generates structure
 
 import os
 import time
+import json
+import csv
 import numpy as np
 import hydra
 import torch
@@ -102,8 +104,38 @@ class Sampler:
         )
 
         start_time = time.time()
-        trainer.predict(self._flow_module, dataloaders=dataloader)
+        predict_out = trainer.predict(self._flow_module, dataloaders=dataloader)
         elapsed_time = time.time() - start_time
+
+        flat_rows = []
+        for batch_out in predict_out:
+            if batch_out is None:
+                continue
+            if isinstance(batch_out, list):
+                flat_rows.extend(batch_out)
+            else:
+                flat_rows.append(batch_out)
+
+        metrics_path_json = os.path.join(self._output_dir, "inference_metrics.json")
+        with open(metrics_path_json, "w") as f:
+            json.dump(flat_rows, f, indent=2)
+
+        if len(flat_rows) > 0:
+            metrics_path_csv = os.path.join(self._output_dir, "inference_metrics.csv")
+            fieldnames = sorted({k for r in flat_rows for k in r.keys()})
+            with open(metrics_path_csv, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(flat_rows)
+
+            rmsds = [
+                float(r["rmsd_c4"])
+                for r in flat_rows
+                if r.get("rmsd_c4") is not None and not np.isnan(r["rmsd_c4"])
+            ]
+            if len(rmsds) > 0:
+                log.info(f"Mean RMSD(C4') over {len(rmsds)} samples: {np.mean(rmsds):.4f}")
+
         log.info(f"Finished in {elapsed_time:.2f}s")
         log.info(
             f"Generated samples are stored here: {self._output_dir}"

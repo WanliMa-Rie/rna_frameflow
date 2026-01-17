@@ -26,6 +26,8 @@ class RNAClusterDataset(Dataset):
         split: str = "train",  # "train", "val", "test"
         max_length: Optional[int] = None,
         overfit: bool = False,
+        return_ensemble: bool = False,
+        max_ensemble_conformers: Optional[int] = None,
     ):
         """
         Args:
@@ -39,6 +41,8 @@ class RNAClusterDataset(Dataset):
         self.split = split
         self.max_length = max_length
         self.overfit = overfit
+        self.return_ensemble = return_ensemble
+        self.max_ensemble_conformers = max_ensemble_conformers
 
         # Gather all cluster directories
         all_clusters = sorted(
@@ -241,7 +245,7 @@ class RNAClusterDataset(Dataset):
 
         is_na_residue_mask = torch.ones_like(res_mask).bool()
 
-        return {
+        out = {
             "aatype": aatype,  # [L]
             "trans_1": trans_1.float(),  # [L, 3]
             "rotmats_1": rotmats_1.float(),  # [L, 3, 3]
@@ -254,4 +258,85 @@ class RNAClusterDataset(Dataset):
             "single_embedding": single_embedding,
             "pair_embedding": pair_embedding,
             "pdb_name": pkl_path.stem,
+            "cluster_id": cluster_dir.name,
         }
+
+        if self.return_ensemble:
+            feature_dir = cluster_dir / "features"
+            all_pkl_files = sorted(list(feature_dir.glob("*.pkl")))
+            if self.max_ensemble_conformers is not None:
+                all_pkl_files = all_pkl_files[: self.max_ensemble_conformers]
+
+            c4_idx = 3
+
+            def _conformer_c4(p: pathlib.Path) -> torch.Tensor:
+                feats = du.read_pkl(str(p))
+                feats = du.parse_complex_feats(feats)
+
+                modeled_idx_local = feats.get("modeled_idx", None)
+                if modeled_idx_local is None:
+                    aatype_np = feats["aatype"]
+                    modeled_idx_local = np.where((aatype_np != 20) & (aatype_np != 26))[0]
+
+                min_idx_local = int(np.min(modeled_idx_local))
+                max_idx_local = int(np.max(modeled_idx_local))
+                full_len_local = int(feats["aatype"].shape[0])
+                feats = {
+                    k: (
+                        v[min_idx_local : (max_idx_local + 1)]
+                        if (
+                            (isinstance(v, np.ndarray) and v.ndim >= 1 and int(v.shape[0]) == full_len_local)
+                            or (torch.is_tensor(v) and v.ndim >= 1 and int(v.shape[0]) == full_len_local)
+                        )
+                        else v
+                    )
+                    for k, v in feats.items()
+                }
+
+                aatype_local = torch.from_numpy(feats["aatype"]).long()
+                atom_positions = torch.from_numpy(feats["atom_positions"]).double()
+                atom_mask = torch.from_numpy(feats["atom_mask"]).double()
+                atom_deoxy = torch.from_numpy(feats["atom_deoxy"]).bool()
+
+                num_na_residue_atoms = 23
+                t = {
+                    "aatype": aatype_local,
+                    "all_atom_positions": atom_positions[:, :num_na_residue_atoms],
+                    "all_atom_mask": atom_mask[:, :num_na_residue_atoms],
+                    "atom_deoxy": atom_deoxy,
+                }
+                t = data_transforms.make_atom23_masks(t)
+                data_transforms.atom23_list_to_atom27_list(
+                    t, ["all_atom_positions", "all_atom_mask"], inplace=True
+                )
+                atom27_pos = t["all_atom_positions"].float()
+
+                seq_len_local = int(aatype_local.shape[0])
+                emb_len_local = int(single_embedding.shape[0])
+                min_len_local = min(seq_len_local, emb_len_local)
+                atom27_pos = atom27_pos[:min_len_local]
+
+                if self.max_length is not None and min_len_local > self.max_length:
+                    if self.split == "train":
+                        start_idx_local = random.randint(0, min_len_local - self.max_length)
+                    else:
+                        start_idx_local = 0
+                    end_idx_local = start_idx_local + self.max_length
+                    atom27_pos = atom27_pos[start_idx_local:end_idx_local]
+
+                return atom27_pos[:, c4_idx]
+
+            ensemble_c4_list = []
+            for p in all_pkl_files:
+                try:
+                    ensemble_c4_list.append(_conformer_c4(p))
+                except Exception:
+                    continue
+
+            if len(ensemble_c4_list) > 0:
+                min_ens_len = min(int(x.shape[0]) for x in ensemble_c4_list)
+                ensemble_c4 = torch.stack([x[:min_ens_len] for x in ensemble_c4_list], dim=0)
+                out["gt_c4_ensemble"] = ensemble_c4
+                out["gt_ensemble_size"] = int(ensemble_c4.shape[0])
+
+        return out

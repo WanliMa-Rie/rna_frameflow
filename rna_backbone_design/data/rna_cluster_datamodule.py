@@ -36,6 +36,11 @@ def length_batching_collate(batch):
 
     # Initialize basic lists for keys not in padding logic (like names)
     padded_batch["pdb_name"] = [b["pdb_name"] for b in batch]
+    if "cluster_id" in batch[0]:
+        padded_batch["cluster_id"] = [b["cluster_id"] for b in batch]
+    if "gt_c4_ensemble" in batch[0]:
+        padded_batch["gt_c4_ensemble"] = [b.get("gt_c4_ensemble", None) for b in batch]
+        padded_batch["gt_ensemble_size"] = [b.get("gt_ensemble_size", None) for b in batch]
     padded_batch["is_na_residue_mask"] = torch.ones(len(batch), max_len, dtype=torch.bool)
 
     # Pre-allocate tensors
@@ -107,22 +112,31 @@ class RNAClusterDataModule(LightningDataModule):
         self.test_dataset = None
 
     def setup(self, stage=None):
+        return_ensemble = bool(self.data_cfg.get("return_ensemble", False))
+        max_ensemble_conformers = self.data_cfg.get("max_ensemble_conformers", None)
+
         if stage in (None, "fit", "validate"):
             self.train_dataset = RNAClusterDataset(
                 data_dir=self.data_dir,
                 split="train",
                 max_length=self.data_cfg.get("max_len", None),
+                return_ensemble=False,
+                max_ensemble_conformers=max_ensemble_conformers,
             )
             self.val_dataset = RNAClusterDataset(
                 data_dir=self.data_dir,
                 split="val",
                 max_length=self.data_cfg.get("max_len", None),
+                return_ensemble=return_ensemble,
+                max_ensemble_conformers=max_ensemble_conformers,
             )
         if stage == "test" or stage is None:
             self.test_dataset = RNAClusterDataset(
                 data_dir=self.data_dir,
                 split="test",
                 max_length=self.data_cfg.get("max_len", None),
+                return_ensemble=return_ensemble,
+                max_ensemble_conformers=max_ensemble_conformers,
             )
 
     def train_dataloader(self):
