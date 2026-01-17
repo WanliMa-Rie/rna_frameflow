@@ -63,6 +63,7 @@ class FlowModule(LightningModule):
 
     def model_step(self, noisy_batch):
         """
+        Given a batch of corrupted Frame objects, predicts the vector field, and calculate the loss between the predicted one and the ground truth.
         Params:
             noisy_batch (dict) : dictionary of tensors corresponding to corrupted Frame objects
 
@@ -330,30 +331,35 @@ class FlowModule(LightningModule):
 
         for i in range(num_batch):
             valid_len = int(mask_np[i].sum())
-            if valid_len >= 2:
-                pred_c4_np = pred_atoms_np[i, :valid_len, c4_idx]
-                c4_metrics = metrics.calc_rna_c4_c4_metrics(pred_c4_np)
-            else:
-                c4_metrics = {
-                    "avg_c4_bond_dists": np.nan,
-                    "c4_c4_deviation": np.nan,
-                    "c4_c4_valid_percent": np.nan,
-                    "num_c4_c4_clashes": np.nan,
-                    "radius_of_gyration": np.nan,
-                }
 
             c4_metrics["rmsd_c4"] = float(rmsd_c4.detach().cpu().numpy()[i])
             batch_metrics.append(c4_metrics)
 
             if batch_idx == 0 and i == 0:
+                # Perform actual generative sampling (from noise) for visualization
+                # This uses the embeddings from the validation set but generates structure from scratch
+                context = {
+                    "single_embedding": batch["single_embedding"][i : i + 1, :valid_len],
+                    "pair_embedding": batch["pair_embedding"][i : i + 1, :valid_len, :valid_len],
+                }
+                # Sample returns list of [B, N, 37, 3] tensors
+                atom37_traj, _, _ = self.interpolant.sample(
+                    1, valid_len, self.model, context=context
+                )
+                # Take the last step (final generated structure) and the first batch item
+                generated_sample = atom37_traj[-1][0].detach().cpu().numpy()
+
                 restype = None
                 if "aatype" in batch:
                     restype = batch["aatype"][i, :valid_len].detach().cpu().numpy()
+                
+                # Save generated sample with unique name including epoch/step
+                filename = f"generated_epoch_{self.current_epoch}_step_{self.global_step}_len_{valid_len}.pdb"
                 saved_rna_path = au.write_complex_to_pdbs(
-                    pred_atoms_np[i, :valid_len],
+                    generated_sample,
                     os.path.join(
                         self._sample_write_dir,
-                        f"sample_{i}_idx_{batch_idx}_len_{valid_len}.pdb",
+                        filename,
                     ),
                     is_na_residue_mask=mask_np[i, :valid_len],
                     restype=restype,
